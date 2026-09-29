@@ -594,7 +594,8 @@ impl<M: InputModeKind> InputBaseState<M> {
         let _subscriptions = vec![
             // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
+            // Blink the cursor when the window is active, stop when it's not:
+            // an inactive window draws no cursor, so blinking only wakes the app.
             cx.observe_window_activation(window, |input, window, cx| {
                 if window.is_window_active() {
                     let focus_handle = input.focus_handle.clone();
@@ -603,6 +604,10 @@ impl<M: InputModeKind> InputBaseState<M> {
                             blink_cursor.start(cx);
                         });
                     }
+                } else {
+                    input.blink_cursor.update(cx, |blink_cursor, cx| {
+                        blink_cursor.stop(cx);
+                    });
                 }
             }),
             cx.on_focus(&focus_handle, window, Self::on_focus),
@@ -1183,6 +1188,15 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Focus the input field.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
+        self.start_blink_cursor(window, cx);
+    }
+
+    /// Start blinking, unless the window is inactive: activating it starts the
+    /// blinking then, and until it does there is no cursor on screen to blink.
+    fn start_blink_cursor(&self, window: &Window, cx: &mut Context<Self>) {
+        if !window.is_window_active() {
+            return;
+        }
         self.blink_cursor.update(cx, |cursor, cx| {
             cursor.start(cx);
         });
@@ -2364,10 +2378,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             && window.is_window_active()
     }
 
-    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
-        });
+    fn on_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_blink_cursor(window, cx);
         cx.emit(InputEvent::Focus);
     }
 
@@ -3894,6 +3906,50 @@ mod tests {
                 assert_eq!(state.value(), "");
             });
         });
+    }
+
+    #[gpui::test]
+    fn test_blink_cursor_runs_only_while_the_window_is_active(cx: &mut TestAppContext) {
+        let input_view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
+        let input = input_view.input;
+        let cursor = input.read_with(&cx, |state, _| state.blink_cursor.clone());
+        let notifies = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let counter = notifies.clone();
+        let _observer =
+            cx.update(|_, cx| cx.observe(&cursor, move |_, _| counter.set(counter.get() + 1)));
+        // Three seconds is within the idle delay, so an active window blinks throughout.
+        let blinks_over_three_seconds = |cx: &mut VisualTestContext| {
+            notifies.set(0);
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(3));
+            cx.run_until_parked();
+            notifies.get()
+        };
+
+        cx.deactivate_window();
+        cx.update(|window, cx| input.update(cx, |state, cx| state.focus(window, cx)));
+        cx.run_until_parked();
+        assert_eq!(
+            blinks_over_three_seconds(&mut cx),
+            0,
+            "focus in an inactive window started the blinking"
+        );
+
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| window.is_window_active()));
+        assert!(
+            blinks_over_three_seconds(&mut cx) > 0,
+            "activation did not start the blinking"
+        );
+
+        cx.deactivate_window();
+        assert_eq!(
+            blinks_over_three_seconds(&mut cx),
+            0,
+            "the cursor kept blinking in an inactive window"
+        );
     }
 
     #[gpui::test]
