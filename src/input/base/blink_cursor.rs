@@ -339,5 +339,4 @@ mod tests {
             "the cursor settled while input kept coming"
         );
     }
-
 }
