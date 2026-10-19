@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 name = "gpui-base"
-version = "0.7.0"
+version = "0.7.3"
 build = false
 exclude = ["examples/"]
 publish = true
@@ -37,11 +37,16 @@ resolver = "2"
 
 [features]
 decimal = ["dep:rust_decimal"]
+gpui-fast = ["dep:gpui-fast"]
 inspector = [
     "gpui_macros/inspector",
     "gpui/inspector",
+    "gpui-fast?/inspector",
 ]
-test-support = ["gpui/test-support"]
+test-support = [
+    "gpui/test-support",
+    "gpui-fast?/test-support",
+]
 
 [lib]
 name = "gpui_base"
@@ -78,11 +83,17 @@ version = "0.3"
 version = "0.3"
 
 [dependencies.gpui]
-version = "=0.3.7"
+version = "=0.3.9"
 package = "gpui-pre"
 
+[dependencies.gpui-fast]
+version = "0.1.7"
+features = ["windows-manifest-provided-by-host"]
+optional = true
+package = "gpui-fast"
+
 [dependencies.gpui_macros]
-version = "=0.3.7"
+version = "=0.3.9"
 package = "gpui-pre-macros"
 
 [dependencies.html5ever]
@@ -138,11 +149,14 @@ version = "1"
 version = "1"
 
 [dependencies.sum-tree]
-version = "=0.3.7"
+version = "=0.3.9"
 package = "gpui-pre-sum-tree"
 
 [dependencies.tracing]
 version = "0.1.41"
+
+[dependencies.unicode-linebreak]
+version = "0.1.5"
 
 [dependencies.unicode-segmentation]
 version = "1.12.0"
@@ -151,18 +165,38 @@ version = "1.12.0"
 version = "1"
 
 [dev-dependencies.criterion]
-version = "0.5"
+version = "0.8"
 
 [dev-dependencies.gpui]
-version = "=0.3.7"
+version = "=0.3.9"
 features = [
     "test-support",
     "bench-support",
 ]
 package = "gpui-pre"
 
+[dev-dependencies.gpui-fast]
+version = "0.1.7"
+features = [
+    "windows-manifest-provided-by-host",
+    "test-support",
+    "bench-support",
+]
+package = "gpui-fast"
+
+[dev-dependencies.gpui-fast-platform]
+version = "0.1.7"
+features = [
+    "font-kit",
+    "x11",
+    "wayland",
+    "runtime_shaders",
+    "bench-support",
+]
+package = "gpui-fast-platform"
+
 [dev-dependencies.gpui_platform]
-version = "=0.3.7"
+version = "=0.3.9"
 features = [
     "font-kit",
     "x11",
@@ -176,7 +210,7 @@ package = "gpui-pre-platform"
 version = "2"
 
 [dev-dependencies.reqwest_client]
-version = "=0.3.7"
+version = "=0.3.9"
 package = "gpui-pre-reqwest-client"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies.smol]
