@@ -968,18 +968,12 @@ impl<M: InputModeKind> InputBaseState<M> {
             }),
             // Observe the blink cursor to repaint the view when it changes.
             cx.observe(&blink_cursor, |_, _, cx| cx.notify()),
-            // Blink the cursor when the window is active, pause when it's not.
             cx.observe_window_activation(window, |input, window, cx| {
                 if !window.is_window_active() {
                     input.cancel_mouse_gesture(cx);
-                }
-                if window.is_window_active() {
-                    let focus_handle = input.focus_handle.clone();
-                    if focus_handle.is_focused(window) {
-                        input.blink_cursor.update(cx, |blink_cursor, cx| {
-                            blink_cursor.start(cx);
-                        });
-                    }
+                    input.blink_cursor.update(cx, BlinkCursor::stop);
+                } else if input.focus_handle.is_focused(window) {
+                    input.start_blink_cursor(window, cx);
                 }
             }),
             cx.observe_window_bounds(window, |input, _, cx| input.cancel_mouse_gesture(cx)),
@@ -1765,9 +1759,13 @@ impl<M: InputModeKind> InputBaseState<M> {
     /// Focus the input field.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus_handle.focus(window, cx);
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
-        });
+        self.start_blink_cursor(window, cx);
+    }
+
+    fn start_blink_cursor(&self, window: &Window, cx: &mut Context<Self>) {
+        if window.is_window_active() {
+            self.blink_cursor.update(cx, BlinkCursor::start);
+        }
     }
 
     /// Refresh the input, so the next render re-runs syntax highlighting and
@@ -4215,10 +4213,8 @@ impl<M: InputModeKind> InputBaseState<M> {
             && window.is_window_active()
     }
 
-    fn on_focus(&mut self, _: &mut Window, cx: &mut Context<Self>) {
-        self.blink_cursor.update(cx, |cursor, cx| {
-            cursor.start(cx);
-        });
+    fn on_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_blink_cursor(window, cx);
         cx.emit(InputEvent::Focus);
     }
 
@@ -8799,6 +8795,43 @@ mod tests {
     }
 
     #[gpui::test]
+    fn cursor_blinks_only_in_an_active_window(cx: &mut TestAppContext) {
+        let view = InputView::build(cx, |state| state);
+        let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        let input = view.input;
+        let cursor = input.read_with(&cx, |state, _| state.blink_cursor.clone());
+        let notifications = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = notifications.clone();
+        let _observer =
+            cx.update(|_, cx| cx.observe(&cursor, move |_, _| count.set(count.get() + 1)));
+        let count_blinks = |cx: &mut VisualTestContext| {
+            cx.run_until_parked();
+            notifications.set(0);
+            cx.executor()
+                .advance_clock(std::time::Duration::from_secs(3));
+            cx.run_until_parked();
+            notifications.get()
+        };
+
+        cx.deactivate_window();
+        cx.update(|window, cx| input.update(cx, |state, cx| state.focus(window, cx)));
+        assert_eq!(count_blinks(&mut cx), 0, "inactive focus started a timer");
+
+        activate_input_window(&mut cx);
+        assert!(
+            count_blinks(&mut cx) > 0,
+            "activation did not resume blinking"
+        );
+
+        cx.deactivate_window();
+        assert_eq!(
+            count_blinks(&mut cx),
+            0,
+            "deactivation left a timer running"
+        );
+    }
+
+    #[gpui::test]
     fn test_undo_manager_keeps_rapid_lines_in_distinct_transactions(cx: &mut TestAppContext) {
         let input_view = InputView::build_textarea(cx, |state| state);
         let mut cx = VisualTestContext::from_window(input_view.window_handle.into(), cx);
@@ -11101,16 +11134,23 @@ mod tests {
         });
     }
 
+    fn activate_input_window(cx: &mut VisualTestContext) {
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        assert!(cx.update(|window, _| window.is_window_active()));
+    }
+
     #[gpui::test]
     fn test_consumed_keystrokes_keep_cursor_visible(cx: &mut TestAppContext) {
         let view = InputView::<EditorMode>::new(cx);
         let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        activate_input_window(&mut cx);
         setup_cursors(&mut cx, &view.input, "a|b");
-        cx.update(|window, cx| {
-            view.input.update(cx, |state, cx| {
-                state.focus(window, cx);
-                state.pause_blink_cursor(cx);
-            });
+        cx.update(|window, cx| view.input.update(cx, |state, cx| state.focus(window, cx)));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            view.input
+                .update(cx, |state, cx| state.pause_blink_cursor(cx))
         });
         cx.run_until_parked();
         cx.executor()
@@ -11140,6 +11180,7 @@ mod tests {
         cx.update(crate::init);
         let view = InputView::<EditorMode>::new(cx);
         let mut cx = VisualTestContext::from_window(view.window_handle.into(), cx);
+        activate_input_window(&mut cx);
         setup_cursors(&mut cx, &view.input, "abcd|efgh");
         let position = |offset: Pixels, cx: &mut VisualTestContext| {
             view.input.read_with(cx, |state, _| {
@@ -11161,10 +11202,10 @@ mod tests {
         cx.simulate_mouse_up(first, MouseButton::Left, Default::default());
         cx.run_until_parked();
 
-        // Pressing elsewhere in the focused input, in the hidden phase of the
-        // blink, shows the caret again at the press.
+        // Focus starts a fresh blink cycle after the first press, so wait for
+        // a full interval before testing a press that reveals the hidden caret.
         cx.executor()
-            .advance_clock(std::time::Duration::from_millis(400));
+            .advance_clock(std::time::Duration::from_millis(500));
         cx.run_until_parked();
         assert!(!visible(&mut cx));
         let second = position(px(30.), &mut cx);
